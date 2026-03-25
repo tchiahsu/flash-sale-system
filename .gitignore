@@ -1,32 +1,111 @@
-# If you prefer the allow list template instead of the deny list, see community template:
-# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
-# Binaries for programs and plugins
+# ====================
+# Terraform
+# ====================
+
+# Local .terraform directories
+**/.terraform/*
+
+# Terraform state files (contain sensitive data, should use remote state)
+*.tfstate
+*.tfstate.*
+
+# Crash log files
+crash.log
+crash.*.log
+
+# Override files (used for local overrides)
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# CLI config files
+.terraformrc
+terraform.rc
+
+# tfvars files (may contain secrets)
+*.tfvars
+*.tfvars.json
+!*.example.tfvars
+
+# Uncomment if you don't want to commit the lock file
+# .terraform.lock.hcl
+
+# ====================
+# Go
+# ====================
+
+# Binaries
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
 
-# Test binary, built with `go test -c`
+# Test binaries
 *.test
 
-# Code coverage profiles and other test artifacts
-*.out
-coverage.*
-*.coverprofile
-profile.cov
-
-# Dependency directories (remove the comment below to include it)
-# vendor/
+# Build output
+/bin/
+/dist/
+/out/
 
 # Go workspace file
 go.work
 go.work.sum
 
-# env file
-.env
+# Dependency directories (comment out if vendoring)
+/vendor/
 
-# Editor/IDE
-# .idea/
-# .vscode/
+# ====================
+# Docker
+# ====================
+
+# Environment files (often contain secrets)
+.env
+.env.*
+!.env.example
+
+# ====================
+# IDE / Editors
+# ====================
+
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ====================
+# OS Files
+# ====================
+
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+
+# ====================
+# Secrets & Credentials
+# ====================
+
+*.pem
+*.key
+*.crt
+secrets/
+credentials/
+
+# ====================
+# Logs
+# ====================
+
+*.log
+logs/
+
+# ====================
+# Misc
+# ====================
+
+# Local config overrides
+*.local
