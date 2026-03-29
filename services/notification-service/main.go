@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/gin-gonic/gin"
+	_ "github.com/lib/pq"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -43,7 +44,7 @@ func connectDB() {
 			user_id VARCHAR(50) NOT NULL,
 			event_id VARCHAR(50) NOT NULL,
 			status VARCHAR(20) NOT NULL,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)
 	`)
 	if err != nil {
@@ -142,5 +143,5 @@ func main() {
 	app := gin.Default()
 	app.GET("/health", healthCheck)
 
-	app.Run(":8082")
+	app.Run(":8080")
 }

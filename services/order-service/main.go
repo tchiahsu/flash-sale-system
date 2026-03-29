@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	_ "github.com/lib/pq"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -55,7 +56,7 @@ var (
 func init() {
 	inventoryServiceURL = os.Getenv("INVENTORY_SERVICE_URL")
 	if inventoryServiceURL == "" {
-		inventoryServiceURL = "http://localhost:8082"
+		inventoryServiceURL = "http://localhost:8080"
 	}
 }
 
@@ -224,5 +225,5 @@ func main() {
 	app.POST("/api/process-order", processOrder)
 	app.GET("/health", healthCheck)
 
-	app.Run(":8081")
+	app.Run(":8080")
 }

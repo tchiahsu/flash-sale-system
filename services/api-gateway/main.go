@@ -21,7 +21,7 @@ var orderServiceURL string
 func init() {
 	orderServiceURL = os.Getenv("ORDER_SERVICE_URL")
 	if orderServiceURL == "" {
-		orderServiceURL = "http://localhost:8081"
+		orderServiceURL = "http://localhost:8080"
 	}
 }
 
