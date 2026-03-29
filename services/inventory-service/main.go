@@ -36,7 +36,7 @@ func main() {
 	const initialInventory = 100
 
 	// Set up redis
-	useRedis = os.Getenv("USE_REDIS") == "true"
+	useRedis = os.Getenv("INVENTORY_BACKEND") == "redis"
 	if useRedis {
 		redisClient = redis.NewClient(&redis.Options{
 			Addr: os.Getenv("REDIS_ADDR"),
@@ -48,7 +48,7 @@ func main() {
 		// Set up Postgres
 	} else {
 		var err error
-		db, err = sql.Open("postgres", os.Getenv("POSTGRES_DSN"))
+		db, err = sql.Open("postgres", os.Getenv("POSTGRES_URL"))
 		if err != nil {
 			panic(err)
 		}
@@ -79,9 +79,11 @@ func reserveTicket(c *gin.Context) {
 		return
 	}
 
-	var success bool
-	var remaining int
-	var err error
+	var (
+		success   bool
+		remaining int
+		err       error
+	)
 
 	// Reserve a ticket using Redis or Postgres
 	if useRedis {
@@ -112,17 +114,16 @@ func reserveRedis(eventID string, quantity int) (bool, int, error) {
 	defer cancel()
 
 	key := "inventory:" + eventID
-	remaining, err := redisClient.DecrBy(ctx, key, int64(quantity)).Result()
+	remaining, err := reserveScript.Run(ctx, redisClient, []string{key}, quantity).Int()
 	if err != nil {
-		return false, 0, nil
+		return false, 0, err
 	}
 
 	if remaining < 0 {
-		redisClient.IncrBy(ctx, key, int64(quantity))
 		return false, 0, nil
 	}
 
-	return true, int(remaining), nil
+	return true, remaining, nil
 }
 
 // Reserves a ticket through Postgres
