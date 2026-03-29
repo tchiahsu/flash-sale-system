@@ -106,7 +106,7 @@ resource "aws_ecs_task_definition" "order_service" {
     portMappings = [{ containerPort = 8080, protocol = "tcp" }]
 
     environment = [
-      { name = "DATABASE_URL", value = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.orders.address}:5432/orders" },
+      { name = "POSTGRES_URL", value = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.orders.address}:5432/orders" },
       { name = "INVENTORY_SERVICE_URL", value = "http://inventory-service.${var.project_name}.local:8080" },
       { name = "RABBITMQ_URL", value = local.rabbitmq_url },
     ]
@@ -134,6 +134,10 @@ resource "aws_ecs_service" "order_service" {
     security_groups  = [aws_security_group.ecs.id]
     assign_public_ip = false
   }
+
+  service_registries {
+  registry_arn = aws_service_discovery_service.order_service.arn
+}
 }
 
 # ─── Inventory Service ───────────────────────────────────────────────────────
@@ -157,7 +161,7 @@ resource "aws_ecs_task_definition" "inventory_service" {
     environment = [
       { name = "INVENTORY_BACKEND", value = var.inventory_backend },
       { name = "REDIS_URL", value = "redis://${aws_elasticache_cluster.inventory.cache_nodes[0].address}:6379" },
-      { name = "DATABASE_URL", value = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.inventory.address}:5432/inventory" },
+      { name = "POSTGRES_URL", value = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.inventory.address}:5432/inventory" },
     ]
 
     logConfiguration = {
@@ -183,6 +187,10 @@ resource "aws_ecs_service" "inventory_service" {
     security_groups  = [aws_security_group.ecs.id]
     assign_public_ip = false
   }
+
+  service_registries {
+  registry_arn = aws_service_discovery_service.inventory_service.arn
+}
 }
 
 # ─── Notification Service ────────────────────────────────────────────────────
@@ -203,6 +211,7 @@ resource "aws_ecs_task_definition" "notification_service" {
     # No port mapping — this service only consumes from RabbitMQ
     environment = [
       { name = "RABBITMQ_URL", value = local.rabbitmq_url },
+      { name = "POSTGRES_URL", value = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.orders.address}:5432/orders" },
     ]
 
     logConfiguration = {
