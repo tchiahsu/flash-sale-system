@@ -4,7 +4,6 @@ import string
 
 
 class FlashSaleTest(HttpUser):
-    """Alternative: Burst traffic pattern"""
     wait_time = between(0, 0.1)
 
     def on_start(self):
@@ -19,4 +18,15 @@ class FlashSaleTest(HttpUser):
             "quantity": 1
         }
 
-        self.client.post("/api/orders", json=payload)
+        with self.client.post(
+            "/api/orders",
+            json=payload,
+            catch_response=True
+        ) as response:
+            if response.status_code == 200:
+                response.success()
+            elif response.status_code == 409:
+                # Sold out - expected, not a failure
+                response.success()
+            else:
+                response.failure(f"Status: {response.status_code}")
