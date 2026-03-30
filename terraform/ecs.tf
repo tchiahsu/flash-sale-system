@@ -126,7 +126,7 @@ resource "aws_ecs_service" "order_service" {
   name            = "${var.project_name}-order-service"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.order_service.arn
-  desired_count   = 2
+  desired_count   = 8
   launch_type     = "FARGATE"
 
   network_configuration {
