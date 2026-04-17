@@ -10,7 +10,6 @@ resource "aws_ecs_cluster" "main" {
 }
 
 locals {
-  # Single source of truth — used for both ECR repos and log groups
   services = ["api-gateway", "order-service", "inventory-service", "notification-service"]
 
   placeholder_image = "public.ecr.aws/amazonlinux/amazonlinux:2"
@@ -26,7 +25,6 @@ resource "aws_cloudwatch_log_group" "services" {
 }
 
 # ─── API Gateway ─────────────────────────────────────────────────────────────
-# No service_registries: the ALB routes to it by IP, Cloud Map not needed.
 
 resource "aws_ecs_task_definition" "api_gateway" {
   family                   = "${var.project_name}-api-gateway"
@@ -44,7 +42,9 @@ resource "aws_ecs_task_definition" "api_gateway" {
     portMappings = [{ containerPort = 8080, protocol = "tcp" }]
 
     environment = [
-      { name = "ORDER_SERVICE_URL", value = "http://order-service.${var.project_name}.local:8080" },
+      { name = "ORDER_SERVICE_URL",        value = "http://order-service.${var.project_name}.local:8080" },
+      { name = "INVENTORY_SERVICE_URL",    value = "http://inventory-service.${var.project_name}.local:8080" },
+      { name = "NOTIFICATION_SERVICE_URL", value = "http://notification-service.${var.project_name}.local:8080" },
     ]
 
     logConfiguration = {
@@ -106,7 +106,7 @@ resource "aws_ecs_task_definition" "order_service" {
     portMappings = [{ containerPort = 8080, protocol = "tcp" }]
 
     environment = [
-      { name = "POSTGRES_URL",         value = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.orders.address}:5432/orders" },
+      { name = "POSTGRES_URL",          value = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.orders.address}:5432/orders" },
       { name = "INVENTORY_SERVICE_URL", value = "http://inventory-service.${var.project_name}.local:8080" },
       { name = "RABBITMQ_URL",          value = local.rabbitmq_url },
     ]
@@ -167,7 +167,7 @@ resource "aws_ecs_task_definition" "inventory_service" {
 
     environment = [
       { name = "INVENTORY_BACKEND", value = var.inventory_backend },
-      { name = "REDIS_ADDR", value = "${aws_elasticache_cluster.inventory.cache_nodes[0].address}:6379" },
+      { name = "REDIS_ADDR",        value = "${aws_elasticache_cluster.inventory.cache_nodes[0].address}:6379" },
       { name = "POSTGRES_URL",      value = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.inventory.address}:5432/inventory" },
     ]
 
@@ -209,7 +209,6 @@ resource "aws_ecs_service" "inventory_service" {
 }
 
 # ─── Notification Service ────────────────────────────────────────────────────
-# No service_registries: this service only consumes from RabbitMQ, never receives inbound calls.
 
 resource "aws_ecs_task_definition" "notification_service" {
   family                   = "${var.project_name}-notification-service"
@@ -224,10 +223,10 @@ resource "aws_ecs_task_definition" "notification_service" {
     name  = "notification-service"
     image = local.placeholder_image
 
+    portMappings = [{ containerPort = 8080, protocol = "tcp" }]
+
     environment = [
       { name = "RABBITMQ_URL", value = local.rabbitmq_url },
-      # Shares the orders DB to record notification delivery status.
-      # Remove if notification-service never writes to orders DB.
       { name = "POSTGRES_URL", value = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.orders.address}:5432/orders" },
     ]
 
@@ -257,6 +256,10 @@ resource "aws_ecs_service" "notification_service" {
     subnets          = [aws_subnet.private_1.id, aws_subnet.private_2.id]
     security_groups  = [aws_security_group.ecs.id]
     assign_public_ip = false
+  }
+
+  service_registries {
+    registry_arn = aws_service_discovery_service.notification_service.arn
   }
 
   lifecycle {

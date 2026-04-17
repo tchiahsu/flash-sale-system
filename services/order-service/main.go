@@ -160,7 +160,6 @@ func processOrder(c *gin.Context) {
 		return
 	}
 
-	// Only write to DB if reservation succeeded
 	_, err = db.Exec(
 		"INSERT INTO orders (id, user_id, event_id, quantity, status) VALUES ($1, $2, $3, $4, $5)",
 		orderID, request.UserID, request.EventID, request.Quantity, "confirmed",
@@ -170,7 +169,6 @@ func processOrder(c *gin.Context) {
 		return
 	}
 
-	// Publish notification, log but don't fail the request if it errors
 	notification := NotificationMessage{
 		OrderID:   orderID,
 		UserID:    request.UserID,
@@ -195,6 +193,15 @@ func processOrder(c *gin.Context) {
 	c.JSON(http.StatusOK, orderResp)
 }
 
+func resetOrders(c *gin.Context) {
+	_, err := db.Exec(`DELETE FROM orders`)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to reset orders"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
 func healthCheck(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "healthy"})
 }
@@ -208,6 +215,7 @@ func main() {
 
 	app := gin.Default()
 	app.POST("/api/process-order", processOrder)
+	app.POST("/api/reset", resetOrders)
 	app.GET("/health", healthCheck)
 	app.Run(":8080")
 }

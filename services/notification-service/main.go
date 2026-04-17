@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"log"
+	"net/http"
 	"os"
 	"time"
 
@@ -120,8 +121,26 @@ func consumeNotifications() {
 	}
 }
 
+func resetNotifications(c *gin.Context) {
+	// Clear the notifications table
+	_, err := db.Exec(`DELETE FROM notifications`)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to reset notifications table"})
+		return
+	}
+
+	// Purge any unprocessed messages still sitting in the queue
+	_, err = rabbitChannel.QueuePurge("notification-queue", false)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to purge notification queue"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
 func healthCheck(c *gin.Context) {
-	c.JSON(200, gin.H{"status": "healthy"})
+	c.JSON(http.StatusOK, gin.H{"status": "healthy"})
 }
 
 func main() {
@@ -134,6 +153,7 @@ func main() {
 	go consumeNotifications()
 
 	app := gin.Default()
+	app.POST("/api/reset", resetNotifications)
 	app.GET("/health", healthCheck)
 	app.Run(":8080")
 }

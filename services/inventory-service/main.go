@@ -18,6 +18,11 @@ type ReserveRequest struct {
 	Quantity int    `json:"quantity"`
 }
 
+const (
+	eventID          = "event-001"
+	initialInventory = 100
+)
+
 var (
 	useRedis    bool
 	redisClient *redis.Client
@@ -33,9 +38,6 @@ var reserveScript = redis.NewScript(`
 `)
 
 func main() {
-	const eventID = "event-001"
-	const initialInventory = 100
-
 	useRedis = os.Getenv("INVENTORY_BACKEND") == "redis"
 	if useRedis {
 		redisClient = redis.NewClient(&redis.Options{
@@ -66,6 +68,7 @@ func main() {
 
 	router := gin.Default()
 	router.POST("/api/reserve", reserveTicket)
+	router.POST("/api/reset", resetInventory)
 	router.GET("/health", getHealth)
 	router.Run("0.0.0.0:8080")
 }
@@ -103,6 +106,30 @@ func reserveTicket(c *gin.Context) {
 		httpStatus = http.StatusConflict
 	}
 	c.JSON(httpStatus, gin.H{"success": success, "remaining": remaining})
+}
+
+func resetInventory(c *gin.Context) {
+	var err error
+
+	if useRedis {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		err = redisClient.Set(ctx, "inventory:"+eventID, initialInventory, 0).Err()
+	} else {
+		_, err = db.Exec(`
+			UPDATE inventory SET remaining = $1 WHERE event_id = $2
+		`, initialInventory, eventID)
+	}
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "reset failed"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":   true,
+		"remaining": initialInventory,
+	})
 }
 
 func reserveRedis(eventID string, quantity int) (bool, int, error) {
