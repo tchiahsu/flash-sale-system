@@ -11,13 +11,11 @@ output "ecr_repository_urls" {
 output "orders_db_endpoint" {
   description = "Orders RDS endpoint"
   value       = aws_db_instance.orders.address
-  sensitive   = true
 }
 
 output "inventory_db_endpoint" {
   description = "Inventory RDS endpoint (Postgres backend)"
   value       = aws_db_instance.inventory.address
-  sensitive   = true
 }
 
 output "redis_endpoint" {

@@ -26,7 +26,6 @@ resource "aws_security_group" "ecs" {
   description = "ECS tasks: inbound from ALB and from other ECS tasks"
   vpc_id      = aws_vpc.main.id
 
-  # API Gateway receives traffic from the ALB
   ingress {
     description     = "HTTP from ALB"
     from_port       = 8080
@@ -35,7 +34,6 @@ resource "aws_security_group" "ecs" {
     security_groups = [aws_security_group.alb.id]
   }
 
-  # Service-to-service calls (Order → Inventory, etc.) stay within this SG
   ingress {
     description = "Intra-service traffic"
     from_port   = 0
@@ -56,7 +54,7 @@ resource "aws_security_group" "ecs" {
 
 resource "aws_security_group" "rds" {
   name        = "${var.project_name}-rds-sg"
-  description = "Postgres access from ECS tasks only"
+  description = "Postgres access from ECS tasks and public internet"
   vpc_id      = aws_vpc.main.id
 
   ingress {
@@ -65,6 +63,14 @@ resource "aws_security_group" "rds" {
     to_port         = 5432
     protocol        = "tcp"
     security_groups = [aws_security_group.ecs.id]
+  }
+
+  ingress {
+    description = "Postgres from anywhere"
+    from_port   = 5432
+    to_port     = 5432
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   egress {
