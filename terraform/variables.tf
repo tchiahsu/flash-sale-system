@@ -36,26 +36,6 @@ variable "rabbitmq_password" {
   sensitive   = true
 }
 
-variable "api_gateway_image" {
-  description = "ECR image URI for the API Gateway service"
-  type        = string
-}
-
-variable "order_service_image" {
-  description = "ECR image URI for the Order Service"
-  type        = string
-}
-
-variable "inventory_service_image" {
-  description = "ECR image URI for the Inventory Service"
-  type        = string
-}
-
-variable "notification_service_image" {
-  description = "ECR image URI for the Notification Service"
-  type        = string
-}
-
 variable "inventory_backend" {
   description = "Inventory storage backend: 'redis' or 'postgres'"
   type        = string

@@ -3,7 +3,7 @@ resource "aws_mq_broker" "rabbitmq" {
 
   engine_type        = "RabbitMQ"
   engine_version     = "3.13"
-  host_instance_type = "mq.t3.micro"
+  host_instance_type = "mq.m7g.medium"
 
   # Single-instance broker is fine for a load-test project.
   # Swap to CLUSTER_MULTI_AZ for production.

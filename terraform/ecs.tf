@@ -9,32 +9,24 @@ resource "aws_ecs_cluster" "main" {
   tags = { Name = "${var.project_name}-cluster" }
 }
 
-# ─── CloudWatch log groups ───────────────────────────────────────────────────
-
 locals {
-  log_groups = [
-    "api-gateway",
-    "order-service",
-    "inventory-service",
-    "notification-service",
-  ]
-}
+  # Single source of truth — used for both ECR repos and log groups
+  services = ["api-gateway", "order-service", "inventory-service", "notification-service"]
 
-resource "aws_cloudwatch_log_group" "services" {
-  for_each          = toset(local.log_groups)
-  name              = "/ecs/${var.project_name}/${each.key}"
-  retention_in_days = 7
+  placeholder_image = "public.ecr.aws/amazonlinux/amazonlinux:2"
 
-  tags = { Name = "${var.project_name}-${each.key}-logs" }
-}
-
-# ─── Shared env helpers ──────────────────────────────────────────────────────
-
-locals {
   rabbitmq_url = "amqps://${var.rabbitmq_username}:${var.rabbitmq_password}@${trimprefix(aws_mq_broker.rabbitmq.instances[0].endpoints[0], "amqps://")}"
 }
 
+resource "aws_cloudwatch_log_group" "services" {
+  for_each          = toset(local.services)
+  name              = "/ecs/${var.project_name}/${each.key}"
+  retention_in_days = 7
+  tags              = { Name = "${var.project_name}-${each.key}-logs" }
+}
+
 # ─── API Gateway ─────────────────────────────────────────────────────────────
+# No service_registries: the ALB routes to it by IP, Cloud Map not needed.
 
 resource "aws_ecs_task_definition" "api_gateway" {
   family                   = "${var.project_name}-api-gateway"
@@ -47,7 +39,7 @@ resource "aws_ecs_task_definition" "api_gateway" {
 
   container_definitions = jsonencode([{
     name  = "api-gateway"
-    image = var.api_gateway_image
+    image = local.placeholder_image
 
     portMappings = [{ containerPort = 8080, protocol = "tcp" }]
 
@@ -64,6 +56,10 @@ resource "aws_ecs_task_definition" "api_gateway" {
       }
     }
   }])
+
+  lifecycle {
+    ignore_changes = [container_definitions]
+  }
 }
 
 resource "aws_ecs_service" "api_gateway" {
@@ -85,6 +81,10 @@ resource "aws_ecs_service" "api_gateway" {
     container_port   = 8080
   }
 
+  lifecycle {
+    ignore_changes = [task_definition]
+  }
+
   depends_on = [aws_lb_listener.http]
 }
 
@@ -101,14 +101,14 @@ resource "aws_ecs_task_definition" "order_service" {
 
   container_definitions = jsonencode([{
     name  = "order-service"
-    image = var.order_service_image
+    image = local.placeholder_image
 
     portMappings = [{ containerPort = 8080, protocol = "tcp" }]
 
     environment = [
-      { name = "POSTGRES_URL", value = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.orders.address}:5432/orders" },
+      { name = "POSTGRES_URL",         value = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.orders.address}:5432/orders" },
       { name = "INVENTORY_SERVICE_URL", value = "http://inventory-service.${var.project_name}.local:8080" },
-      { name = "RABBITMQ_URL", value = local.rabbitmq_url },
+      { name = "RABBITMQ_URL",          value = local.rabbitmq_url },
     ]
 
     logConfiguration = {
@@ -120,6 +120,10 @@ resource "aws_ecs_task_definition" "order_service" {
       }
     }
   }])
+
+  lifecycle {
+    ignore_changes = [container_definitions]
+  }
 }
 
 resource "aws_ecs_service" "order_service" {
@@ -136,8 +140,12 @@ resource "aws_ecs_service" "order_service" {
   }
 
   service_registries {
-  registry_arn = aws_service_discovery_service.order_service.arn
-}
+    registry_arn = aws_service_discovery_service.order_service.arn
+  }
+
+  lifecycle {
+    ignore_changes = [task_definition]
+  }
 }
 
 # ─── Inventory Service ───────────────────────────────────────────────────────
@@ -153,15 +161,14 @@ resource "aws_ecs_task_definition" "inventory_service" {
 
   container_definitions = jsonencode([{
     name  = "inventory-service"
-    image = var.inventory_service_image
+    image = local.placeholder_image
 
     portMappings = [{ containerPort = 8080, protocol = "tcp" }]
 
-    # INVENTORY_BACKEND controls Experiment 3: set to "redis" or "postgres"
     environment = [
       { name = "INVENTORY_BACKEND", value = var.inventory_backend },
-      { name = "REDIS_URL", value = "redis://${aws_elasticache_cluster.inventory.cache_nodes[0].address}:6379" },
-      { name = "POSTGRES_URL", value = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.inventory.address}:5432/inventory" },
+      { name = "REDIS_ADDR", value = "${aws_elasticache_cluster.inventory.cache_nodes[0].address}:6379" },
+      { name = "POSTGRES_URL",      value = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.inventory.address}:5432/inventory" },
     ]
 
     logConfiguration = {
@@ -173,6 +180,10 @@ resource "aws_ecs_task_definition" "inventory_service" {
       }
     }
   }])
+
+  lifecycle {
+    ignore_changes = [container_definitions]
+  }
 }
 
 resource "aws_ecs_service" "inventory_service" {
@@ -189,11 +200,16 @@ resource "aws_ecs_service" "inventory_service" {
   }
 
   service_registries {
-  registry_arn = aws_service_discovery_service.inventory_service.arn
-}
+    registry_arn = aws_service_discovery_service.inventory_service.arn
+  }
+
+  lifecycle {
+    ignore_changes = [task_definition]
+  }
 }
 
 # ─── Notification Service ────────────────────────────────────────────────────
+# No service_registries: this service only consumes from RabbitMQ, never receives inbound calls.
 
 resource "aws_ecs_task_definition" "notification_service" {
   family                   = "${var.project_name}-notification-service"
@@ -206,11 +222,12 @@ resource "aws_ecs_task_definition" "notification_service" {
 
   container_definitions = jsonencode([{
     name  = "notification-service"
-    image = var.notification_service_image
+    image = local.placeholder_image
 
-    # No port mapping — this service only consumes from RabbitMQ
     environment = [
       { name = "RABBITMQ_URL", value = local.rabbitmq_url },
+      # Shares the orders DB to record notification delivery status.
+      # Remove if notification-service never writes to orders DB.
       { name = "POSTGRES_URL", value = "postgresql://${var.db_username}:${var.db_password}@${aws_db_instance.orders.address}:5432/orders" },
     ]
 
@@ -223,6 +240,10 @@ resource "aws_ecs_task_definition" "notification_service" {
       }
     }
   }])
+
+  lifecycle {
+    ignore_changes = [container_definitions]
+  }
 }
 
 resource "aws_ecs_service" "notification_service" {
@@ -236,5 +257,9 @@ resource "aws_ecs_service" "notification_service" {
     subnets          = [aws_subnet.private_1.id, aws_subnet.private_2.id]
     security_groups  = [aws_security_group.ecs.id]
     assign_public_ip = false
+  }
+
+  lifecycle {
+    ignore_changes = [task_definition]
   }
 }
