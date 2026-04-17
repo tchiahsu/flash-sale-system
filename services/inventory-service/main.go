@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"log"
 	"net/http"
 	"os"
 	"time"
@@ -35,7 +36,6 @@ func main() {
 	const eventID = "event-001"
 	const initialInventory = 100
 
-	// Set up redis
 	useRedis = os.Getenv("INVENTORY_BACKEND") == "redis"
 	if useRedis {
 		redisClient = redis.NewClient(&redis.Options{
@@ -44,36 +44,38 @@ func main() {
 		if err := initRedis(eventID, initialInventory); err != nil {
 			panic(err)
 		}
-
-		// Set up Postgres
 	} else {
 		var err error
-		db, err = sql.Open("postgres", os.Getenv("POSTGRES_URL"))
+		for i := range 10 {
+			db, err = sql.Open("postgres", os.Getenv("POSTGRES_URL"))
+			if err == nil {
+				if err = db.Ping(); err == nil {
+					break
+				}
+			}
+			log.Printf("DB not ready, retrying in 3s (attempt %d/10)", i+1)
+			time.Sleep(3 * time.Second)
+		}
 		if err != nil {
-			panic(err)
+			panic("Failed to connect to database after 10 attempts: " + err.Error())
 		}
 		if err := initPostgres(db, eventID, initialInventory); err != nil {
 			panic(err)
 		}
 	}
 
-	// Set up server
 	router := gin.Default()
-	router.POST("api/reserve", reserveTicket)
+	router.POST("/api/reserve", reserveTicket)
 	router.GET("/health", getHealth)
-
 	router.Run("0.0.0.0:8080")
 }
 
-// Reserves a ticket
 func reserveTicket(c *gin.Context) {
 	var request ReserveRequest
-
 	if err := c.BindJSON(&request); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
-
 	if request.Quantity <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "quantity must be greater than 0"})
 		return
@@ -85,7 +87,6 @@ func reserveTicket(c *gin.Context) {
 		err       error
 	)
 
-	// Reserve a ticket using Redis or Postgres
 	if useRedis {
 		success, remaining, err = reserveRedis(request.EventID, request.Quantity)
 	} else {
@@ -101,32 +102,23 @@ func reserveTicket(c *gin.Context) {
 	if !success {
 		httpStatus = http.StatusConflict
 	}
-
-	c.JSON(httpStatus, gin.H{
-		"success":   success,
-		"remaining": remaining,
-	})
+	c.JSON(httpStatus, gin.H{"success": success, "remaining": remaining})
 }
 
-// Reserves a ticket through Redis
 func reserveRedis(eventID string, quantity int) (bool, int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	key := "inventory:" + eventID
-	remaining, err := reserveScript.Run(ctx, redisClient, []string{key}, quantity).Int()
+	remaining, err := reserveScript.Run(ctx, redisClient, []string{"inventory:" + eventID}, quantity).Int()
 	if err != nil {
 		return false, 0, err
 	}
-
 	if remaining < 0 {
 		return false, 0, nil
 	}
-
 	return true, remaining, nil
 }
 
-// Reserves a ticket through Postgres
 func reservePostgres(eventID string, quantity int) (bool, int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -136,53 +128,44 @@ func reservePostgres(eventID string, quantity int) (bool, int, error) {
 		UPDATE inventory
 		SET remaining = remaining - $1
 		WHERE event_id = $2 AND remaining >= $1
-		RETURNING remaining;
+		RETURNING remaining
 	`, quantity, eventID).Scan(&remaining)
 
 	if err == sql.ErrNoRows {
 		return false, 0, nil
 	}
-
 	if err != nil {
 		return false, 0, err
 	}
-
 	return true, remaining, nil
 }
 
-// Sets up Redis
 func initRedis(eventID string, initialInventory int) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-
-	key := "inventory:" + eventID
-	return redisClient.Set(ctx, key, initialInventory, 0).Err()
+	// SetNX: only set if key doesn't already exist — prevents reset on restart
+	return redisClient.SetNX(ctx, "inventory:"+eventID, initialInventory, 0).Err()
 }
 
-// Sets up Postgres DB
 func initPostgres(db *sql.DB, eventID string, initialInventory int) error {
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS inventory (
 			event_id TEXT PRIMARY KEY,
 			remaining INT NOT NULL
-		);
+		)
 	`)
-
 	if err != nil {
 		return err
 	}
-
+	// DO NOTHING: don't reset inventory if it already exists
 	_, err = db.Exec(`
 		INSERT INTO inventory (event_id, remaining)
 		VALUES ($1, $2)
-		ON CONFLICT (event_id)
-			DO UPDATE SET remaining = EXCLUDED.remaining;
+		ON CONFLICT (event_id) DO NOTHING
 	`, eventID, initialInventory)
 	return err
 }
 
 func getHealth(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
-		"status": "healthy",
-	})
+	c.JSON(http.StatusOK, gin.H{"status": "healthy"})
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"log"
 	"net/http"
 	"os"
 	"time"
@@ -51,6 +52,7 @@ var (
 	db                  *sql.DB
 	rabbitConn          *amqp.Connection
 	rabbitChannel       *amqp.Channel
+	httpClient          = &http.Client{Timeout: 5 * time.Second}
 )
 
 func init() {
@@ -62,14 +64,19 @@ func init() {
 
 func connectDB() {
 	postgresURL := os.Getenv("POSTGRES_URL")
-	if postgresURL == "" {
-		postgresURL = "postgres URL"
-	}
-
 	var err error
-	db, err = sql.Open("postgres", postgresURL)
+	for i := range 10 {
+		db, err = sql.Open("postgres", postgresURL)
+		if err == nil {
+			if err = db.Ping(); err == nil {
+				break
+			}
+		}
+		log.Printf("DB not ready, retrying in 3s (attempt %d/10)", i+1)
+		time.Sleep(3 * time.Second)
+	}
 	if err != nil {
-		panic("Failed to connect to database: " + err.Error())
+		panic("Failed to connect to database after 10 attempts: " + err.Error())
 	}
 
 	_, err = db.Exec(`
@@ -89,28 +96,25 @@ func connectDB() {
 
 func connectRabbitMQ() {
 	rabbitURL := os.Getenv("RABBITMQ_URL")
-	if rabbitURL == "" {
-		rabbitURL = "amqp://guest:guest@localhost:5672/"
-	}
-
 	var err error
-	rabbitConn, err = amqp.Dial(rabbitURL)
-	if err != nil {
-		panic("Failed to connect to RabbitMQ: " + err.Error())
+	for i := range 10 {
+		rabbitConn, err = amqp.Dial(rabbitURL)
+		if err == nil {
+			rabbitChannel, err = rabbitConn.Channel()
+			if err == nil {
+				break
+			}
+		}
+		log.Printf("RabbitMQ not ready, retrying in 3s (attempt %d/10)", i+1)
+		time.Sleep(3 * time.Second)
 	}
-
-	rabbitChannel, err = rabbitConn.Channel()
 	if err != nil {
-		panic("Failed to open RabbitMQ channel: " + err.Error())
+		panic("Failed to connect to RabbitMQ after 10 attempts: " + err.Error())
 	}
 
 	_, err = rabbitChannel.QueueDeclare(
 		"notification-queue",
-		true,  // durable
-		false, // auto-delete
-		false, // exclusive
-		false, // no-wait
-		nil,   // arguments
+		true, false, false, false, nil,
 	)
 	if err != nil {
 		panic("Failed to declare queue: " + err.Error())
@@ -126,22 +130,16 @@ func processOrder(c *gin.Context) {
 
 	orderID := uuid.New().String()
 
-	// Call Inventory Service
-	reserveRequest := ReserveRequest{
-		EventID:  request.EventID,
-		Quantity: request.Quantity,
-	}
+	reserveRequest := ReserveRequest{EventID: request.EventID, Quantity: request.Quantity}
 	body, _ := json.Marshal(reserveRequest)
 
-	response, err := http.Post(
+	response, err := httpClient.Post(
 		inventoryServiceURL+"/api/reserve",
 		"application/json",
 		bytes.NewBuffer(body),
 	)
 	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"error": "inventory service unavailable",
-		})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "inventory service unavailable"})
 		return
 	}
 	defer response.Body.Close()
@@ -149,64 +147,52 @@ func processOrder(c *gin.Context) {
 	var reserveResponse ReserveResponse
 	json.NewDecoder(response.Body).Decode(&reserveResponse)
 
-	// Determine Order Status
-	var status string
-	var reason string
-	if reserveResponse.Success {
-		status = "confirmed"
-	} else {
-		status = "failed"
-		reason = "sold_out"
+	orderResp := OrderResponse{
+		OrderID:  orderID,
+		EventID:  request.EventID,
+		Quantity: request.Quantity,
 	}
 
-	// Record Order In Postgres
-	_, err = db.Exec(
-		"INSERT INTO orders (id, user_id, event_id, quantity, status) VALUES ($1, $2, $3, $4, $5)",
-		orderID, request.UserID, request.EventID, request.Quantity, status,
-	)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "failed to record order",
-		})
+	if !reserveResponse.Success {
+		orderResp.Status = "failed"
+		orderResp.Reason = "sold_out"
+		c.JSON(http.StatusConflict, orderResp)
 		return
 	}
 
-	// Publish to RabbitMQ
+	// Only write to DB if reservation succeeded
+	_, err = db.Exec(
+		"INSERT INTO orders (id, user_id, event_id, quantity, status) VALUES ($1, $2, $3, $4, $5)",
+		orderID, request.UserID, request.EventID, request.Quantity, "confirmed",
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record order"})
+		return
+	}
+
+	// Publish notification, log but don't fail the request if it errors
 	notification := NotificationMessage{
 		OrderID:   orderID,
 		UserID:    request.UserID,
 		EventID:   request.EventID,
-		Status:    status,
+		Status:    "confirmed",
 		Timestamp: time.Now().UnixMilli(),
 	}
 	notificationBody, _ := json.Marshal(notification)
-
-	rabbitChannel.Publish(
-		"",
-		"notification-queue",
-		false,
-		false,
+	err = rabbitChannel.Publish(
+		"", "notification-queue", false, false,
 		amqp.Publishing{
 			DeliveryMode: amqp.Persistent,
 			ContentType:  "application/json",
 			Body:         notificationBody,
 		},
 	)
-
-	// Return Response
-	orderResp := OrderResponse{
-		OrderID:  orderID,
-		Status:   status,
-		EventID:  request.EventID,
-		Quantity: request.Quantity,
-		Reason:   reason,
+	if err != nil {
+		log.Printf("WARNING: failed to publish notification for order %s: %s", orderID, err)
 	}
 
-	if status == "confirmed" {
-		c.JSON(http.StatusOK, orderResp)
-	} else {
-		c.JSON(http.StatusConflict, orderResp)
-	}
+	orderResp.Status = "confirmed"
+	c.JSON(http.StatusOK, orderResp)
 }
 
 func healthCheck(c *gin.Context) {
@@ -221,9 +207,7 @@ func main() {
 	defer rabbitChannel.Close()
 
 	app := gin.Default()
-
 	app.POST("/api/process-order", processOrder)
 	app.GET("/health", healthCheck)
-
 	app.Run(":8080")
 }

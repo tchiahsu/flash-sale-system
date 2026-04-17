@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -16,7 +17,10 @@ type OrderRequest struct {
 	Quantity int    `json:"quantity"`
 }
 
-var orderServiceURL string
+var (
+	orderServiceURL string
+	httpClient      = &http.Client{Timeout: 5 * time.Second}
+)
 
 func init() {
 	orderServiceURL = os.Getenv("ORDER_SERVICE_URL")
@@ -33,7 +37,7 @@ func handleOrders(c *gin.Context) {
 	}
 
 	body, _ := json.Marshal(request)
-	response, err := http.Post(orderServiceURL+"/api/process-order", "application/json", bytes.NewBuffer(body))
+	response, err := httpClient.Post(orderServiceURL+"/api/process-order", "application/json", bytes.NewBuffer(body))
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "order service unavailable"})
 		return
@@ -50,9 +54,7 @@ func healthCheck(c *gin.Context) {
 
 func main() {
 	app := gin.Default()
-
 	app.POST("/api/orders", handleOrders)
 	app.GET("/health", healthCheck)
-
 	app.Run(":8080")
 }

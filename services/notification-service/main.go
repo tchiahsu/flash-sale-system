@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	_ "github.com/lib/pq"
@@ -27,14 +28,19 @@ var (
 
 func connectDB() {
 	postgresURL := os.Getenv("POSTGRES_URL")
-	if postgresURL == "" {
-		postgresURL = "postgres://user:password@local"
-	}
-
 	var err error
-	db, err = sql.Open("postgres", postgresURL)
+	for i := range 10 {
+		db, err = sql.Open("postgres", postgresURL)
+		if err == nil {
+			if err = db.Ping(); err == nil {
+				break
+			}
+		}
+		log.Printf("DB not ready, retrying in 3s (attempt %d/10)", i+1)
+		time.Sleep(3 * time.Second)
+	}
 	if err != nil {
-		panic("Failed to connect to database: " + err.Error())
+		panic("Failed to connect to database after 10 attempts: " + err.Error())
 	}
 
 	_, err = db.Exec(`
@@ -54,28 +60,25 @@ func connectDB() {
 
 func connectRabbitMQ() {
 	rabbitURL := os.Getenv("RABBITMQ_URL")
-	if rabbitURL == "" {
-		rabbitURL = "amqp://guest:guest@localhost:5672/"
-	}
-
 	var err error
-	rabbitConn, err = amqp.Dial(rabbitURL)
-	if err != nil {
-		panic("Failed to connect to RabbitMQ: " + err.Error())
+	for i := range 10 {
+		rabbitConn, err = amqp.Dial(rabbitURL)
+		if err == nil {
+			rabbitChannel, err = rabbitConn.Channel()
+			if err == nil {
+				break
+			}
+		}
+		log.Printf("RabbitMQ not ready, retrying in 3s (attempt %d/10)", i+1)
+		time.Sleep(3 * time.Second)
 	}
-
-	rabbitChannel, err = rabbitConn.Channel()
 	if err != nil {
-		panic("Failed to open RabbitMQ channel: " + err.Error())
+		panic("Failed to connect to RabbitMQ after 10 attempts: " + err.Error())
 	}
 
 	_, err = rabbitChannel.QueueDeclare(
 		"notification-queue",
-		true,  // durable
-		false, // auto-delete
-		false, // exclusive
-		false, // no-wait
-		nil,   // arguments
+		true, false, false, false, nil,
 	)
 	if err != nil {
 		panic("Failed to declare queue: " + err.Error())
@@ -85,43 +88,35 @@ func connectRabbitMQ() {
 func consumeNotifications() {
 	msgs, err := rabbitChannel.Consume(
 		"notification-queue",
-		"",    // consumer tag
-		false, // auto-ack (false = manual ack)
-		false, // exclusive
-		false, // no-local
-		false, // no-wait
-		nil,   // arguments
+		"", false, false, false, false, nil,
 	)
 	if err != nil {
 		panic("Failed to start consuming: " + err.Error())
 	}
 
-	log.Println("Notification Service: Waiting for messages...")
+	log.Println("Notification service: waiting for messages...")
 
 	for msg := range msgs {
 		var notification NotificationMessage
-		err := json.Unmarshal(msg.Body, &notification)
-		if err != nil {
+		if err := json.Unmarshal(msg.Body, &notification); err != nil {
 			log.Printf("Failed to parse message: %s", err)
-			msg.Nack(false, false) // reject, don't requeue
+			msg.Nack(false, false)
 			continue
 		}
 
-		// Record notification in Postgres
 		_, err = db.Exec(
 			"INSERT INTO notifications (order_id, user_id, event_id, status) VALUES ($1, $2, $3, $4)",
 			notification.OrderID, notification.UserID, notification.EventID, notification.Status,
 		)
 		if err != nil {
 			log.Printf("Failed to record notification: %s", err)
-			msg.Nack(false, true) // reject, requeue
+			msg.Nack(false, true)
 			continue
 		}
 
-		log.Printf("Notification sent: Order %s for User %s - %s",
+		log.Printf("Notification recorded: order %s for user %s — %s",
 			notification.OrderID, notification.UserID, notification.Status)
-
-		msg.Ack(false) // acknowledge
+		msg.Ack(false)
 	}
 }
 
@@ -136,12 +131,9 @@ func main() {
 	defer rabbitConn.Close()
 	defer rabbitChannel.Close()
 
-	//S Start consuming in background
 	go consumeNotifications()
 
-	// Health Check Endpoint
 	app := gin.Default()
 	app.GET("/health", healthCheck)
-
 	app.Run(":8080")
 }
