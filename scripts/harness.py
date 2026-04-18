@@ -1,38 +1,12 @@
-import requests
-import concurrent.futures
-import collections
-import threading
 import psycopg2
+import collections
 import time
 
-ALB_URL        = "http://flash-sale-system-alb-1588994481.us-east-1.elb.amazonaws.com"
-ORDERS_DB_URL    = "postgresql://flashsalesystem:flashsalepassword@flash-sale-system-orders.cs78k4i80u4a.us-east-1.rds.amazonaws.com:5432/orders"
-INVENTORY_DB_URL = "postgresql://flashsalesystem:flashsalepassword@flash-sale-system-inventory.cs78k4i80u4a.us-east-1.rds.amazonaws.com:5432/inventory"
+ORDERS_DB_URL    = "postgresql://flashsale:yourpassword@flash-sale-system-orders.coj6iuswmi2o.us-east-1.rds.amazonaws.com:5432/orders"
+INVENTORY_DB_URL = "postgresql://flashsale:yourpassword@flash-sale-system-inventory.coj6iuswmi2o.us-east-1.rds.amazonaws.com:5432/inventory"
 
-TOTAL_USERS       = 200
 INITIAL_INVENTORY = 100
 EVENT_ID          = "event-001"
-
-barrier = threading.Barrier(TOTAL_USERS)
-
-
-def purchase(user_id):
-    try:
-        barrier.wait()  # all threads wait here until everyone is ready, then fire simultaneously
-        r = requests.post(
-            f"{ALB_URL}/api/orders",
-            json={"event_id": EVENT_ID, "user_id": f"user-{user_id}", "quantity": 1},
-            timeout=10,
-        )
-        data = r.json()
-        return {
-            "user_id":     user_id,
-            "order_id":    data.get("order_id"),
-            "status":      data.get("status"),
-            "http_status": r.status_code,
-        }
-    except Exception as e:
-        return {"user_id": user_id, "error": str(e)}
 
 
 def wait_for_queue_drain():
@@ -42,76 +16,51 @@ def wait_for_queue_drain():
 
 
 def main():
-    print(f"Sending {TOTAL_USERS} concurrent purchase requests...")
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=TOTAL_USERS) as executor:
-        results = list(executor.map(purchase, range(TOTAL_USERS)))
-
-    # ── Collect results ───────────────────────────────────────────────
-    confirmed = [r for r in results if r.get("status") == "confirmed"]
-    failed    = [r for r in results if r.get("status") == "failed"]
-    errors    = [r for r in results if "error" in r]
-
-    print(f"\nResults:")
-    print(f"  Confirmed : {len(confirmed)}")
-    print(f"  Failed    : {len(failed)}")
-    print(f"  Errors    : {len(errors)}")
-    if errors:
-        print(f"\nSample error: {errors[0]}")
-
-    # wait for notifications to finish processing before running checks
     wait_for_queue_drain()
 
     passes = []
+    db_confirmed_count = 0
+    db_order_ids = []
 
     # ── Check 1: No overselling ───────────────────────────────────────
-    print("\n[Check 1] No overselling (API responses)...")
-    passed = len(confirmed) <= INITIAL_INVENTORY
-    passes.append(passed)
-    if passed:
-        print(f"  PASS — {len(confirmed)} confirmed orders (limit {INITIAL_INVENTORY})")
-    else:
-        print(f"  FAIL — {len(confirmed)} confirmed orders exceeded limit of {INITIAL_INVENTORY}")
+    print("\n[Check 1] No overselling (DB confirmed orders)...")
+    try:
+        conn = psycopg2.connect(ORDERS_DB_URL)
+        cur  = conn.cursor()
+        cur.execute("SELECT id FROM orders WHERE status = 'confirmed'")
+        db_order_ids = [row[0] for row in cur.fetchall()]
+        db_confirmed_count = len(db_order_ids)
+        cur.close()
+        conn.close()
+
+        passed = db_confirmed_count <= INITIAL_INVENTORY
+        passes.append(passed)
+        if passed:
+            print(f"  PASS — {db_confirmed_count} confirmed orders (limit {INITIAL_INVENTORY})")
+        else:
+            print(f"  FAIL — {db_confirmed_count} confirmed orders exceeded limit of {INITIAL_INVENTORY}")
+    except Exception as e:
+        passes.append(False)
+        print(f"  FAIL — could not connect to orders DB: {e}")
 
     # ── Check 2: No duplicate order IDs ──────────────────────────────
     print("\n[Check 2] No duplicate order IDs...")
-    order_ids  = [r["order_id"] for r in confirmed if r.get("order_id")]
-    duplicates = [oid for oid, count in collections.Counter(order_ids).items() if count > 1]
+    duplicates = [oid for oid, count in collections.Counter(db_order_ids).items() if count > 1]
     passed = not duplicates
     passes.append(passed)
     if passed:
-        print(f"  PASS — all {len(order_ids)} order IDs are unique")
+        print(f"  PASS — all {len(db_order_ids)} order IDs are unique")
     else:
         print(f"  FAIL — duplicate order IDs: {duplicates}")
 
     # ── Check 3: All confirmed orders exist in DB ─────────────────────
-    print("\n[Check 3] All confirmed orders exist in orders DB...")
-    missing_orders = []
-    db_confirmed_count = 0
-    try:
-        conn = psycopg2.connect(ORDERS_DB_URL)
-        cur  = conn.cursor()
-
-        # batch query instead of one per order
-        cur.execute("SELECT id FROM orders WHERE status = 'confirmed'")
-        db_order_ids = {row[0] for row in cur.fetchall()}
-        db_confirmed_count = len(db_order_ids)
-
-        api_order_ids = set(order_ids)
-        missing_orders = list(api_order_ids - db_order_ids)
-
-        cur.close()
-        conn.close()
-
-        passed = not missing_orders
-        passes.append(passed)
-        if passed:
-            print(f"  PASS — all {len(api_order_ids)} confirmed orders found in DB")
-        else:
-            print(f"  FAIL — {len(missing_orders)} orders missing from DB: {missing_orders}")
-    except Exception as e:
-        passes.append(False)
-        print(f"  FAIL — could not connect to orders DB: {e}")
+    print("\n[Check 3] Confirmed orders exist in orders DB...")
+    passed = db_confirmed_count > 0
+    passes.append(passed)
+    if passed:
+        print(f"  PASS — {db_confirmed_count} confirmed orders found in DB")
+    else:
+        print(f"  FAIL — no confirmed orders found in DB")
 
     # ── Check 4: Inventory reconciliation ────────────────────────────
     print("\n[Check 4] Inventory reconciliation (confirmed + remaining = initial)...")

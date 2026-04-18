@@ -13,7 +13,7 @@ class FlashSaleTest(HttpUser):
     @task
     def buy_ticket(self):
         payload = {
-            "event_id": "evt-001",
+            "event_id": "event-001",
             "user_id": self.user_id,
             "quantity": 1
         }
@@ -21,7 +21,9 @@ class FlashSaleTest(HttpUser):
         with self.client.post(
             "/api/orders",
             json=payload,
-            catch_response=True
+            catch_response=True,
+            # name="/api/orders [postgres]"
+            # name="/api/orders [redis]"
         ) as response:
             if response.status_code == 200:
                 response.success()
