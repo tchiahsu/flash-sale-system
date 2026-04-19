@@ -37,12 +37,12 @@ variable "rabbitmq_password" {
 }
 
 variable "inventory_backend" {
-  description = "Inventory storage backend: 'redis' or 'postgres'"
+  description = "Inventory storage backend: 'redis_postgres' or 'postgres'"
   type        = string
-  default     = "postgres"
+  default     = "redis_postgres"
 
   validation {
-    condition     = contains(["redis", "postgres"], var.inventory_backend)
-    error_message = "inventory_backend must be 'redis' or 'postgres'."
+    condition     = contains(["redis_postgres", "postgres"], var.inventory_backend)
+    error_message = "inventory_backend must be 'redis_postgres' or 'postgres'."
   }
 }
