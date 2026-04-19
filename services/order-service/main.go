@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -49,10 +50,13 @@ type NotificationMessage struct {
 
 var (
 	inventoryServiceURL string
+	rabbitURL           string
 	db                  *sql.DB
-	rabbitConn          *amqp.Connection
-	rabbitChannel       *amqp.Channel
 	httpClient          = &http.Client{Timeout: 5 * time.Second}
+
+	rabbitMu      sync.Mutex
+	rabbitConn    *amqp.Connection
+	rabbitChannel *amqp.Channel
 )
 
 func init() {
@@ -60,6 +64,7 @@ func init() {
 	if inventoryServiceURL == "" {
 		inventoryServiceURL = "http://localhost:8080"
 	}
+	rabbitURL = os.Getenv("RABBITMQ_URL")
 }
 
 func connectDB() {
@@ -94,30 +99,77 @@ func connectDB() {
 	}
 }
 
-func connectRabbitMQ() {
-	rabbitURL := os.Getenv("RABBITMQ_URL")
-	var err error
-	for i := range 10 {
-		rabbitConn, err = amqp.Dial(rabbitURL)
-		if err == nil {
-			rabbitChannel, err = rabbitConn.Channel()
-			if err == nil {
-				break
-			}
-		}
-		log.Printf("RabbitMQ not ready, retrying in 3s (attempt %d/10)", i+1)
-		time.Sleep(3 * time.Second)
-	}
+func connectRabbitMQ() error {
+	conn, err := amqp.Dial(rabbitURL)
 	if err != nil {
-		panic("Failed to connect to RabbitMQ after 10 attempts: " + err.Error())
+		return err
+	}
+	ch, err := conn.Channel()
+	if err != nil {
+		conn.Close()
+		return err
+	}
+	_, err = ch.QueueDeclare("notification-queue", true, false, false, false, nil)
+	if err != nil {
+		ch.Close()
+		conn.Close()
+		return err
 	}
 
-	_, err = rabbitChannel.QueueDeclare(
-		"notification-queue",
-		true, false, false, false, nil,
+	rabbitMu.Lock()
+	rabbitConn = conn
+	rabbitChannel = ch
+	rabbitMu.Unlock()
+	return nil
+}
+
+// reconnectLoop runs in the background and re-establishes the RabbitMQ
+// connection whenever it drops.
+func reconnectLoop() {
+	for {
+		rabbitMu.Lock()
+		connClosed := rabbitConn == nil || rabbitConn.IsClosed()
+		rabbitMu.Unlock()
+
+		if connClosed {
+			log.Println("RabbitMQ connection lost — reconnecting in 5s...")
+			time.Sleep(5 * time.Second)
+			if err := connectRabbitMQ(); err != nil {
+				log.Printf("Reconnect failed: %s", err)
+			} else {
+				log.Println("RabbitMQ reconnected")
+			}
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+func publishNotification(notification NotificationMessage) {
+	body, _ := json.Marshal(notification)
+
+	rabbitMu.Lock()
+	ch := rabbitChannel
+	rabbitMu.Unlock()
+
+	if ch == nil {
+		log.Printf("WARNING: RabbitMQ not connected, dropping notification for order %s", notification.OrderID)
+		return
+	}
+
+	err := ch.Publish(
+		"", "notification-queue", false, false,
+		amqp.Publishing{
+			DeliveryMode: amqp.Persistent,
+			ContentType:  "application/json",
+			Body:         body,
+		},
 	)
 	if err != nil {
-		panic("Failed to declare queue: " + err.Error())
+		log.Printf("WARNING: failed to publish notification for order %s: %s", notification.OrderID, err)
+		// mark connection as closed so reconnectLoop picks it up
+		rabbitMu.Lock()
+		rabbitConn.Close()
+		rabbitMu.Unlock()
 	}
 }
 
@@ -169,25 +221,13 @@ func processOrder(c *gin.Context) {
 		return
 	}
 
-	notification := NotificationMessage{
+	publishNotification(NotificationMessage{
 		OrderID:   orderID,
 		UserID:    request.UserID,
 		EventID:   request.EventID,
 		Status:    "confirmed",
 		Timestamp: time.Now().UnixMilli(),
-	}
-	notificationBody, _ := json.Marshal(notification)
-	err = rabbitChannel.Publish(
-		"", "notification-queue", false, false,
-		amqp.Publishing{
-			DeliveryMode: amqp.Persistent,
-			ContentType:  "application/json",
-			Body:         notificationBody,
-		},
-	)
-	if err != nil {
-		log.Printf("WARNING: failed to publish notification for order %s: %s", orderID, err)
-	}
+	})
 
 	orderResp.Status = "confirmed"
 	c.JSON(http.StatusOK, orderResp)
@@ -208,10 +248,20 @@ func healthCheck(c *gin.Context) {
 
 func main() {
 	connectDB()
-	connectRabbitMQ()
+
+	// initial connection with retries
+	for i := range 10 {
+		if err := connectRabbitMQ(); err == nil {
+			break
+		} else {
+			log.Printf("RabbitMQ not ready, retrying in 3s (attempt %d/10)", i+1)
+			time.Sleep(3 * time.Second)
+		}
+	}
+
+	go reconnectLoop()
+
 	defer db.Close()
-	defer rabbitConn.Close()
-	defer rabbitChannel.Close()
 
 	app := gin.Default()
 	app.POST("/api/process-order", processOrder)
