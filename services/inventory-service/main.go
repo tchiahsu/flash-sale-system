@@ -23,8 +23,12 @@ const (
 	initialInventory = 100
 )
 
+// INVENTORY_BACKEND options:
+//   "postgres"       – atomic UPDATE in PostgreSQL only (original)
+//   "redis_postgres" – atomic decrement in Redis, async sync to PostgreSQL (new)
+
 var (
-	useRedis    bool
+	backend     string
 	redisClient *redis.Client
 	db          *sql.DB
 )
@@ -38,32 +42,41 @@ var reserveScript = redis.NewScript(`
 `)
 
 func main() {
-	useRedis = os.Getenv("INVENTORY_BACKEND") == "redis"
-	if useRedis {
+	backend = os.Getenv("INVENTORY_BACKEND")
+	if backend == "" {
+		backend = "postgres"
+	}
+
+	// Always connect to Postgres — needed for both backends
+	var err error
+	for i := range 10 {
+		db, err = sql.Open("postgres", os.Getenv("POSTGRES_URL"))
+		if err == nil {
+			if err = db.Ping(); err == nil {
+				break
+			}
+		}
+		log.Printf("DB not ready, retrying in 3s (attempt %d/10)", i+1)
+		time.Sleep(3 * time.Second)
+	}
+	if err != nil {
+		panic("Failed to connect to database after 10 attempts: " + err.Error())
+	}
+	if err := initPostgres(db, eventID, initialInventory); err != nil {
+		panic(err)
+	}
+
+	// Connect to Redis only when using redis_postgres backend
+	if backend == "redis_postgres" {
 		redisClient = redis.NewClient(&redis.Options{
 			Addr: os.Getenv("REDIS_ADDR"),
 		})
 		if err := initRedis(eventID, initialInventory); err != nil {
 			panic(err)
 		}
+		log.Println("Inventory backend: redis_postgres (Redis reservation + async Postgres sync)")
 	} else {
-		var err error
-		for i := range 10 {
-			db, err = sql.Open("postgres", os.Getenv("POSTGRES_URL"))
-			if err == nil {
-				if err = db.Ping(); err == nil {
-					break
-				}
-			}
-			log.Printf("DB not ready, retrying in 3s (attempt %d/10)", i+1)
-			time.Sleep(3 * time.Second)
-		}
-		if err != nil {
-			panic("Failed to connect to database after 10 attempts: " + err.Error())
-		}
-		if err := initPostgres(db, eventID, initialInventory); err != nil {
-			panic(err)
-		}
+		log.Println("Inventory backend: postgres")
 	}
 
 	router := gin.Default()
@@ -90,8 +103,8 @@ func reserveTicket(c *gin.Context) {
 		err       error
 	)
 
-	if useRedis {
-		success, remaining, err = reserveRedis(request.EventID, request.Quantity)
+	if backend == "redis_postgres" {
+		success, remaining, err = reserveRedisPostgres(request.EventID, request.Quantity)
 	} else {
 		success, remaining, err = reservePostgres(request.EventID, request.Quantity)
 	}
@@ -108,31 +121,9 @@ func reserveTicket(c *gin.Context) {
 	c.JSON(httpStatus, gin.H{"success": success, "remaining": remaining})
 }
 
-func resetInventory(c *gin.Context) {
-	var err error
-
-	if useRedis {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		err = redisClient.Set(ctx, "inventory:"+eventID, initialInventory, 0).Err()
-	} else {
-		_, err = db.Exec(`
-			UPDATE inventory SET remaining = $1 WHERE event_id = $2
-		`, initialInventory, eventID)
-	}
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "reset failed"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"success":   true,
-		"remaining": initialInventory,
-	})
-}
-
-func reserveRedis(eventID string, quantity int) (bool, int, error) {
+// reserveRedisPostgres atomically decrements Redis, then asynchronously
+// syncs the new remaining count back to PostgreSQL.
+func reserveRedisPostgres(eventID string, quantity int) (bool, int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -143,6 +134,20 @@ func reserveRedis(eventID string, quantity int) (bool, int, error) {
 	if remaining < 0 {
 		return false, 0, nil
 	}
+
+	// Async sync to Postgres — does not block the HTTP response
+	go func(eventID string, remaining int) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, err := db.ExecContext(ctx, `
+			UPDATE inventory SET remaining = $1 WHERE event_id = $2
+		`, remaining, eventID)
+		if err != nil {
+			log.Printf("WARNING: failed to sync inventory to postgres (event=%s remaining=%d): %v",
+				eventID, remaining, err)
+		}
+	}(eventID, remaining)
+
 	return true, remaining, nil
 }
 
@@ -167,10 +172,38 @@ func reservePostgres(eventID string, quantity int) (bool, int, error) {
 	return true, remaining, nil
 }
 
+func resetInventory(c *gin.Context) {
+	var err error
+
+	if backend == "redis_postgres" {
+		// Reset both Redis and Postgres
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		err = redisClient.Set(ctx, "inventory:"+eventID, initialInventory, 0).Err()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "redis reset failed"})
+			return
+		}
+	}
+
+	// Always reset Postgres
+	_, err = db.Exec(`
+		UPDATE inventory SET remaining = $1 WHERE event_id = $2
+	`, initialInventory, eventID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "postgres reset failed"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":   true,
+		"remaining": initialInventory,
+	})
+}
+
 func initRedis(eventID string, initialInventory int) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	// SetNX: only set if key doesn't already exist — prevents reset on restart
 	return redisClient.SetNX(ctx, "inventory:"+eventID, initialInventory, 0).Err()
 }
 
@@ -184,7 +217,6 @@ func initPostgres(db *sql.DB, eventID string, initialInventory int) error {
 	if err != nil {
 		return err
 	}
-	// DO NOTHING: don't reset inventory if it already exists
 	_, err = db.Exec(`
 		INSERT INTO inventory (event_id, remaining)
 		VALUES ($1, $2)
