@@ -6,7 +6,7 @@ A distributed flash sale platform built on AWS to evaluate how architectural dec
  
 ## Why We Built This
  
-Flash sale systems are one of the hardest problems in distributed systems. The correctness requirements are strict — oversell even one ticket and you have a real-world dispute. The performance requirements are equally strict, time out under load and users give up. Most systems get one right but not both.
+Flash sale systems are one of the hardest problems in distributed systems. The correctness requirements are strict, oversell even one ticket and you have a real-world dispute. The performance requirements are equally strict, time out under load and users give up. Most systems get one right but not both.
  
 We wanted to build a system that takes both seriously, and then deliberately stress-test it to find exactly where and how it breaks. Every experiment in this project is designed to answer a specific question about a specific architectural decision: Does horizontal scaling help if you scale the wrong service? Does the system stay correct when a critical component fails mid-sale? Does Redis actually outperform Postgres for inventory reservation, and does that advantage hold for correctness as well as speed?
  
