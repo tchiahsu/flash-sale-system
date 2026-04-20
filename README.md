@@ -43,10 +43,10 @@ The system is built as four microservices deployed on AWS ECS Fargate, sitting b
 ### Purchase Flow
  
 1. A user sends a purchase request to the API Gateway, which forwards it to the Order Service
-2. The Order Service makes a **synchronous** HTTP call to the Inventory Service to reserve a ticket — it waits for a response before proceeding
+2. The Order Service makes a **synchronous** HTTP call to the Inventory Service to reserve a ticket, it waits for a response before proceeding
 3. The Inventory Service performs an atomic decrement on the ticket count (via Redis Lua script or PostgreSQL atomic UPDATE) and returns success or failure
 4. If the reservation succeeds, the Order Service writes a confirmed order to PostgreSQL and returns a confirmation to the user
-5. The Order Service publishes a message to RabbitMQ — the Notification Service picks this up **asynchronously** and records a notification
+5. The Order Service publishes a message to RabbitMQ, the Notification Service picks this up **asynchronously** and records a notification
 The critical path is synchronous by design. If the Inventory Service is unreachable, the Order fails cleanly with no partial state written. Notifications are asynchronous because they do not affect purchase correctness and should not block the user.
  
 ### Inventory Backends
