@@ -6,7 +6,7 @@ A distributed flash sale platform built on AWS to evaluate how architectural dec
  
 ## Why We Built This
  
-Flash sale systems are one of the hardest problems in distributed systems. The correctness requirements are strict — oversell even one ticket and you have a real-world dispute. The performance requirements are equally strict — time out under load and users give up. Most systems get one right but not both.
+Flash sale systems are one of the hardest problems in distributed systems. The correctness requirements are strict — oversell even one ticket and you have a real-world dispute. The performance requirements are equally strict, time out under load and users give up. Most systems get one right but not both.
  
 We wanted to build a system that takes both seriously, and then deliberately stress-test it to find exactly where and how it breaks. Every experiment in this project is designed to answer a specific question about a specific architectural decision: Does horizontal scaling help if you scale the wrong service? Does the system stay correct when a critical component fails mid-sale? Does Redis actually outperform Postgres for inventory reservation, and does that advantage hold for correctness as well as speed?
  
@@ -209,13 +209,13 @@ The project started from a high-level proposal describing four services and thre
  
 **Service communication model.** The initial proposal left inter-service communication unspecified. After working through the purchase flow, we settled on a hybrid synchronous/asynchronous design. The critical path is synchronous because users need an immediate answer. Notifications are asynchronous through RabbitMQ because they do not affect purchase correctness and should not block the user.
  
-**Role clarification between Order and Inventory.** Early on it was unclear which service should orchestrate the purchase flow. We determined that the Order Service should act as the coordinator — it calls Inventory to reserve, writes the order record, and publishes to RabbitMQ. The Inventory Service is solely responsible for protecting the ticket count. This separation allowed us to independently scale and swap each service during experiments.
+**Role clarification between Order and Inventory.** Early on it was unclear which service should orchestrate the purchase flow. We determined that the Order Service should act as the coordinator, it calls Inventory to reserve, writes the order record, and publishes to RabbitMQ. The Inventory Service is solely responsible for protecting the ticket count. This separation allowed us to independently scale and swap each service during experiments.
  
 **Experiment 1 redesign.** The original Experiment 1 targeted the Inventory Service for horizontal scaling. After analysis we believed the Order Service would be the actual bottleneck. Experiment 1 was revised to scale the Order Service. Results showed the bottleneck was downstream, directly motivating Experiment 3.
  
-**Experiment 3 redesign.** The original Experiment 3 compared Redis-only against Postgres-only. A mock interview flagged that Redis without persistence is not a realistic production design — a node restart would lose all inventory state. The experiment was redesigned to compare a Redis+Postgres hybrid against Postgres-only, which is both more realistic and more meaningful as an architectural comparison.
+**Experiment 3 redesign.** The original Experiment 3 compared Redis-only against Postgres-only. A mock interview flagged that Redis without persistence is not a realistic production design, a node restart would lose all inventory state. The experiment was redesigned to compare a Redis+Postgres hybrid against Postgres-only, which is both more realistic and more meaningful as an architectural comparison.
  
-**Addition of Experiment 4.** The original proposal had three experiments. A fourth was added to test RabbitMQ behavior under stress. Most projects treat the message queue as infrastructure that just works — we wanted to explicitly test what happens when it does not.
+**Addition of Experiment 4.** The original proposal had three experiments. A fourth was added to test RabbitMQ behavior under stress. Most projects treat the message queue as infrastructure that just works, we wanted to explicitly test what happens when it does not.
  
 ---
  
