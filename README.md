@@ -56,7 +56,7 @@ The Inventory Service supports two backends, switchable via the `INVENTORY_BACKE
 | Backend | How it works |
 |---|---|
 | `postgres` | Atomic `UPDATE inventory SET remaining = remaining - 1 WHERE remaining >= 1` — one database, one operation, one source of truth |
-| `redis_postgres` | Atomic Lua script decrements Redis in-memory counter; background goroutine syncs remaining count back to PostgreSQL asynchronously |
+| `redis_postgres` | Atomic decrements Redis in-memory counter; background goroutine syncs remaining count back to PostgreSQL asynchronously |
  
 ---
  
