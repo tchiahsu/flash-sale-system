@@ -90,7 +90,7 @@ flash-sale-system/
 ├── terraform/                # AWS infrastructure — VPC, ECS, RDS, ElastiCache, MQ, ALB
 ├── load-testing/             # Locust files for all four experiments
 ├── scripts/                  # Consistency verification script, deploy script
-└── graphs/                   # CloudWatch and Locust result graphs per experiment
+└── docs/                     # Final Project Report
 ```
  
 ---
